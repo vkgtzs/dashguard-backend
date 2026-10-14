@@ -233,6 +233,44 @@ app.get("/mediciones", async (req, res) => {
 // INICIAR SERVIDOR
 // ================================
 
+
+// Recorridos controlados con los botones del ESP32.
+app.post('/recorridos/:accion', async (req, res) => {
+    const b = req.body;
+    const accion = req.params.accion;
+    if (!['iniciar', 'finalizar'].includes(accion)) return res.status(404).json({error:'Accion desconocida'});
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!b || Array.isArray(b) || typeof b.device_id !== 'string' ||
+        !b.device_id.trim() || b.device_id.length > 100 ||
+        typeof b.request_id !== 'string' || !uuid.test(b.request_id) ||
+        b.gps_valido !== true || typeof b.latitud !== 'number' || !Number.isFinite(b.latitud) ||
+        b.latitud < -90 || b.latitud > 90 || typeof b.longitud !== 'number' ||
+        !Number.isFinite(b.longitud) || b.longitud < -180 || b.longitud > 180 ||
+        !Number.isInteger(b.edad_ms) || b.edad_ms < 0 || b.edad_ms > 2147483647) {
+        return res.status(400).json({error:'Solicitud de recorrido invalida'});
+    }
+    try {
+        const {data, error} = await supabase.rpc('dashguard_comando_recorrido', {
+            p_request_id:b.request_id, p_device_id:b.device_id.trim(), p_accion:accion,
+            p_latitud:b.latitud, p_longitud:b.longitud, p_edad_ms:b.edad_ms
+        });
+        if (error) { console.error(error); return res.status(500).json({error:'No se pudo guardar el recorrido'}); }
+        if (!data || !Number.isInteger(data.status)) throw new Error('Respuesta RPC invalida');
+        return res.status(data.status).json(data);
+    } catch (error) { console.error(error); return res.status(500).json({error:'Error de recorridos'}); }
+});
+app.get('/recorridos', async (req, res) => {
+    const device = req.query.device_id;
+    if (typeof device !== 'string' || !device.trim() || device.length > 100)
+        return res.status(400).json({error:'device_id requerido'});
+    try {
+        const {data,error} = await supabase.from('recorridos').select('*')
+            .eq('device_id',device.trim()).order('inicio_fecha',{ascending:false}).limit(100);
+        if (error) throw error;
+        return res.json({recorridos:data});
+    } catch (error) { console.error(error); return res.status(500).json({error:'No se pudieron consultar recorridos'}); }
+});
+
 app.listen(PORT, () => {
     console.log("-----------------------------------");
     console.log("DashGuard Backend");
