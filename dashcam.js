@@ -14,7 +14,8 @@ function autenticar(env) {
     const propietario=igual(token,env.DASHCAM_OWNER_TOKEN);
     const dispositivo=igual(token,env.DASHCAM_DEVICE_TOKEN);
     if (!propietario && !dispositivo) return res.status(401).json({error:'Autenticacion requerida'});
-    if (req.method==='GET' && !propietario || req.method!=='GET' && !dispositivo)
+    const exportar=req.method==='POST'&&/^\/dashcam\/recorridos\/[a-f0-9-]{36}\/exportar$/.test(req.path);
+    if (req.method==='GET' && !propietario || req.method!=='GET' && !dispositivo && !(propietario&&exportar))
       return res.status(403).json({error:'Operacion no permitida para esta credencial'});
     if (req.body?.device_id && req.body.device_id!==env.DASHCAM_DEVICE_ID)
       return res.status(403).json({error:'Dispositivo no autorizado'});
@@ -33,7 +34,8 @@ function validarRegistro(r,device) {
   return {id:r.id,device_id:device,recorrido_id:r.recorrido_id,tipo:r.tipo,contenido,contenido_sha256:r.sha256};
 }
 
-function montar(app,supabase) {
+function montar(app,supabase,opciones={}) {
+  const exportador=opciones.exportador?require('./bloques').montarBloques(app,supabase,process.env.DASHCAM_DEVICE_ID):null;
   const bucket=supabase.storage.from('dashguard-videos');
   const ruta=(device,trip,id)=>`${device}/${trip}/${id}.mp4`;
   app.post('/dashcam/registros',async(req,res)=>{
@@ -56,6 +58,7 @@ function montar(app,supabase) {
         confirmados.push({id:fila.id,sha256:fila.contenido_sha256,device_id:req.device});
       }
       res.json({confirmados});
+      if(exportador)for(const fila of filas){if(fila.tipo==='fin'&&fila.contenido.estado==='completo'&&fila.contenido.presentacion_origen!=='raspberry')exportador.lanzar(fila.recorrido_id).catch(()=>{});}
     } catch { res.status(502).json({error:'No se confirmaron todos los registros; conservar y reintentar'}); }
   });
 
@@ -76,6 +79,18 @@ function montar(app,supabase) {
       }
       res.json({video_id:id,recorrido_id:trip,device_id:req.device,sha256:sha,bytes:req.body.length});
     } catch { res.status(502).json({error:'Subida no confirmada; conservar video y reintentar'}); }
+  });
+  app.put('/dashcam/partes/:trip/:id/:numero',express.raw({type:'application/octet-stream',limit:'8mb'}),async(req,res)=>{
+    const {trip,id,numero}=req.params,sha=req.headers['x-content-sha256'];
+    if(!UUID.test(trip)||!UUID.test(id)||!/^\d{1,3}$/.test(numero)||!SHA.test(sha||'')||!Buffer.isBuffer(req.body)||!req.body.length||digest(req.body)!==sha)
+      return res.status(400).json({error:'Parte o checksum invalido'});
+    try{
+      const p=`${req.device}/${trip}/bloques-300-v1/${id}/parte_${String(Number(numero)).padStart(3,'0')}.bin`;
+      const {error}=await bucket.upload(p,req.body,{contentType:'application/octet-stream',upsert:false});
+      if(error){const anterior=await bucket.download(p);if(anterior.error)throw anterior.error;
+        if(digest(Buffer.from(await anterior.data.arrayBuffer()))!==sha)return res.status(409).json({error:'Parte existente distinta'});}
+      res.json({bloque_id:id,numero:Number(numero),recorrido_id:trip,device_id:req.device,sha256:sha,bytes:req.body.length});
+    }catch{res.status(502).json({error:'Parte no confirmada; conservar y reintentar'});}
   });
 
   app.get('/dashcam/recorridos',async(req,res)=>{
@@ -100,9 +115,20 @@ function montar(app,supabase) {
   app.get('/dashcam/videos/:id',async(req,res)=>{
     if(!UUID.test(req.params.id)) return res.status(400).json({error:'UUID invalido'});
     try {
-      const r=await supabase.from('dashcam_registros').select('recorrido_id').eq('id',req.params.id)
+      const r=await supabase.from('dashcam_registros').select('recorrido_id,contenido').eq('id',req.params.id)
         .eq('device_id',req.device).eq('tipo','video').single();
       if(r.error) return res.status(404).json({error:'Video no disponible'});
+      if(r.data.contenido.clase==='coleccion'||r.data.contenido.fuente_interna)return res.status(404).json({error:'Es una fuente interna, no un bloque de consulta'});
+      if(Array.isArray(r.data.contenido.partes)){
+        const partes=[];
+        for(const p of r.data.contenido.partes){
+          if(typeof p.ruta!=='string'||!p.ruta.startsWith(`${req.device}/${r.data.recorrido_id}/bloques-300-v1/${req.params.id}/`))throw Error('Ruta no autorizada');
+          const firmado=await bucket.createSignedUrl(p.ruta,300);if(firmado.error)throw firmado.error;
+          partes.push({url:firmado.data.signedUrl,bytes:p.bytes,sha256:p.sha256});
+        }
+        return res.json({partes,sha256:r.data.contenido.sha256,bytes:r.data.contenido.bytes,
+          archivo:`bloque_${String(r.data.contenido.numero).padStart(2,'0')}.mp4`,expira_s:300});
+      }
       const {data,error}=await bucket.createSignedUrl(ruta(req.device,r.data.recorrido_id,req.params.id),300);
       if(error) throw error;
       res.json({url:data.signedUrl,expira_s:300});

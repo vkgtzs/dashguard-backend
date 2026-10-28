@@ -40,11 +40,11 @@ app.use(express.json({limit:'2mb'}));
 
 app.get("/", (req, res) => {
     res.json({
-        mensaje: "Backend de DashGuard funcionando", version: 'dashcam-offline-v1'
+        mensaje: "Backend de DashGuard funcionando", version: 'dashcam-offline-v1', presentacion:'bloques-5min-v1'
     });
 });
 app.use(autenticar(process.env));
-montar(app,supabase);
+montar(app,supabase,{exportador:require.main===module});
 
 // ================================
 // POST /mediciones

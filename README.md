@@ -87,4 +87,3 @@ Estas pruebas conservan un recorrido marcado como sintetico, sin datos de hardwa
 Render sigue conectado al repositorio historico `vkgtzs/dashguard-backend`.
 La fuente de desarrollo es `vkgtzs/dashguard/backend`; publicar una copia de los
 archivos del backend, conservando historial y excluyendo todos los .env reales.
-
