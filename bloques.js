@@ -55,23 +55,24 @@ async function existente(s,device,trip){
  if(r.error)throw r.error;return r.data?.contenido;
 }
 async function procesar(s,device,trip){
+ const etapa=valor=>trabajos.set(trip,{estado:'procesando',etapa:valor});etapa('consultar_fuentes');
  const bucket=s.storage.from('dashguard-videos');
  const r=await s.from('dashcam_registros').select('id,contenido').eq('device_id',device).eq('recorrido_id',trip).eq('tipo','video').limit(1000);
  if(r.error)throw r.error;
  const fuentes=r.data.filter(v=>!v.contenido.presentacion).sort((a,b)=>a.contenido.metadata.inicio_ns-b.contenido.metadata.inicio_ns);
  if(!fuentes.length)throw Error('No hay fuentes recibidas');
  const marcas=fuentes.flatMap(v=>v.contenido.metadata.sensor_timestamps_ns);
- const update=await s.storage.updateBucket('dashguard-videos',{public:false,fileSizeLimit:48_000_000,allowedMimeTypes:['video/mp4','application/octet-stream']});
+ etapa('configurar_bucket');const update=await s.storage.updateBucket('dashguard-videos',{public:false,fileSizeLimit:48_000_000,allowedMimeTypes:['video/mp4','application/octet-stream']});
  if(update.error)throw update.error;
  const links=await bucket.createSignedUrls(fuentes.map(v=>`${device}/${trip}/${v.id}.mp4`),3600);
  if(links.error||links.data.some(v=>!v.signedUrl||v.error))throw Error('No se pudieron autorizar las fuentes');
  const dir=await fsp.mkdtemp(path.join(os.tmpdir(),'dashguard-bloques-'));
  try{
-  const grupos=await agrupar(links.data.map(v=>v.signedUrl),dir);
+  etapa('ffmpeg');const grupos=await agrupar(links.data.map(v=>v.signedUrl),dir);
   if(grupos.reduce((n,g)=>n+g.frames,0)!==marcas.length)throw Error('No coincide el total de fotogramas');
   const ids=[];let offset=0;
   for(let i=0;i<grupos.length;i++){
-   const g=grupos[i],id=uuid(`dashguard:bloque:v1:${device}:${trip}:${SEGUNDOS}:${i}`),partes=[];
+   etapa('subir_bloque_'+(i+1));const g=grupos[i],id=uuid(`dashguard:bloque:v1:${device}:${trip}:${SEGUNDOS}:${i}`),partes=[];
    const completo=await hashStream(fs.createReadStream(g.archivo));
    for(let desde=0,n=0;desde<g.bytes;desde+=PARTE_BYTES,n++){
     const fin=Math.min(g.bytes,desde+PARTE_BYTES)-1;
@@ -97,7 +98,7 @@ async function procesar(s,device,trip){
   await registro(s,device,trip,coleccionId(device,trip),{presentacion:true,clase:'coleccion',segundos:SEGUNDOS,
       bloques:ids,frames:marcas.length,fuentes:fuentes.map(v=>v.id),originales_conservados:true,recodificado:false});
   trabajos.set(trip,{estado:'completo',bloques_listos:ids.length,total:ids.length});
- }finally{
+ }catch(e){e.etapa=trabajos.get(trip)?.etapa;throw e;}finally{
   // Solo directorio efimero creado aqui; nunca rutas recibidas del usuario.
   if(!path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep+'dashguard-bloques-'))throw Error('Ruta temporal inesperada');
   await fsp.rm(dir,{recursive:true,force:true});
@@ -113,7 +114,7 @@ async function atender(s,device){
  if(ocupado)return;
  const pendiente=[...trabajos.entries()].find(([,v])=>v.estado==='pendiente');if(!pendiente)return;
  ocupado=true;const [trip]=pendiente;trabajos.set(trip,{estado:'procesando'});
- try{await procesar(s,device,trip);}catch{trabajos.set(trip,{estado:'error',error:'No se completaron los bloques; fuentes conservadas. Puede reintentarse.'});}
+ try{await procesar(s,device,trip);}catch(e){trabajos.set(trip,{estado:'error',etapa:e.etapa||trabajos.get(trip)?.etapa,error:'No se completaron los bloques; fuentes conservadas. Puede reintentarse.'});}
  finally{ocupado=false;}
 }
 function montarBloques(app,s,device){
