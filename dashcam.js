@@ -27,7 +27,7 @@ function autenticar(env) {
 function validarRegistro(r,device) {
   if (!r || !UUID.test(r.id||'') || !UUID.test(r.recorrido_id||'') ||
       !['inicio','fin','muestra','video'].includes(r.tipo) || typeof r.contenido_json!=='string' ||
-      Buffer.byteLength(r.contenido_json)>128*1024 || !SHA.test(r.sha256||'') || digest(r.contenido_json)!==r.sha256)
+      Buffer.byteLength(r.contenido_json)>512*1024 || !SHA.test(r.sha256||'') || digest(r.contenido_json)!==r.sha256)
     throw Error('Registro o checksum invalido');
   const contenido=JSON.parse(r.contenido_json);
   if (!contenido || typeof contenido!=='object' || Array.isArray(contenido)) throw Error('Contenido invalido');
